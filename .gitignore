@@ -1,0 +1,12 @@
+# Output of run_nh3_model (recreated on every run)
+figures/
+
+# MATLAB autosave and temporary files
+*.asv
+*.m~
+*.mat
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini

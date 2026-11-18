@@ -1,4 +1,4 @@
-% RUN_NH3_MODEL  Run file for the poultry NH3 recovery model (version 9: journal figures drawn at print size).
+% RUN_NH3_MODEL  Run file for the poultry NH3 recovery model.
 %
 % How to use:
 %   1. In MATLAB, set the Current Folder to this 'model' folder.
@@ -18,7 +18,7 @@ p = nh3_model('params');          % default parameters, with their sources
 % p.litter         = 'new';       % 'used' or 'new'
 % p.emission_model = 'quadratic'; % 'linear' or 'quadratic'
 % p.ER_slope       = 0.024;       % g NH3/bird/d per day of age (0.024-0.038)
-% p.emission_airflow = true;      % less emission at low airflow (paper 33)
+% p.emission_airflow = true;      % less emission at low airflow (Miles et al. 2012)
 % p.Q_shape        = 'linear';    % ventilation shape: 'paper17' (measured, default) or 'linear'
 
 % Spray scrubber:
@@ -51,10 +51,10 @@ save_figs = true;                             % save all figures in ../figures: 
                                               % EMF (for Word, Windows only), PNG 600 dpi and single panels
 
 %% 2. Checks against published data --------------------------------------
-val = nh3_model('validate',        p);   % spray model vs papers 15, 3, 1
-pk  = nh3_model('validate_packed', p);   % packed-bed model vs papers 6, 13
-chk = nh3_model('inputcheck',      p);   % house input model vs paper 17 (+ airflow link, paper 33)
-bp  = nh3_model('bypasscheck',     p);   % bypass load fraction vs paper 22
+val = nh3_model('validate',        p);   % spray model vs Hadlocon et al. 2015c; Hadlocon et al. 2014a; Hadlocon et al. 2015a
+pk  = nh3_model('validate_packed', p);   % packed-bed model vs Van der Heyden et al. 2016; Melse and Ogink 2005
+chk = nh3_model('inputcheck',      p);   % house input model vs Moore et al. 2011 (+ airflow link, Miles et al. 2012)
+bp  = nh3_model('bypasscheck',     p);   % bypass load fraction vs Melse et al. 2006
 
 %% 3. Simulate one flock in each season, for each scrubber type ----------
 res = cell(numel(types), numel(seasons));
@@ -104,7 +104,7 @@ end
 fprintf(['\nNotes\n' ...
   '  NaN = not modeled for that scrubber type.\n' ...
   '  Spray: "days inside correlation range" counts the days on which inlet NH3 (30-300 ppmv)\n' ...
-  '  and air velocity (about 2-4 m/s) are within the range tested in paper 15. On other days\n' ...
+  '  and air velocity (about 2-4 m/s) are within the range tested in Hadlocon et al. 2015c. On other days\n' ...
   '  the spray efficiency is an extrapolation and should not be trusted.\n' ...
   '  Packed: physics-based, so no fitted range, but the result depends strongly on the packing\n' ...
   '  constant C_V (see CHECK 3).\n']);
@@ -158,7 +158,7 @@ fprintf(['\nNotes on the economics\n' ...
   '  Break-even AS price = price of ammonium sulphate at which the scrubber pays for itself.\n' ...
   '  Capture percentages carry the model limits listed above (spray extrapolated, packed C_V).\n' ...
   '  Prices marked ASSUMPTION in location_data (nh3_model.m) are placeholders.\n' ...
-  '  Acid cost vs AS income per kg N tests the statement of paper 27 that the acid\n' ...
+  '  Acid cost vs AS income per kg N tests the statement of Moore et al. 2025 that the acid\n' ...
   '  costs more than the recovered N is worth.\n']);
 
 %% 6. Sensitivity: which inputs move the cost most ------------------------
@@ -188,7 +188,7 @@ end
 fprintf(['\nNotes on the optimization\n' ...
   '  Each row is the cheapest design on the grid that meets the goal in the first column.\n' ...
   '  Packed designs above %d Pa added pressure (packing + mist eliminator) are excluded (p.dp_limit).\n' ...
-  '  Spray results at low air velocity rely on the paper 15 equation outside its tested range.\n'], p.dp_limit);
+  '  Spray results at low air velocity rely on the Hadlocon et al. 2015c equation outside its tested range.\n'], p.dp_limit);
 
 %% 9. Global analysis: all uncertain inputs varied together --------------
 if gsa_N > 0
@@ -203,24 +203,24 @@ if gsa_N > 0
       '  size (about +/- 0.1) and can come out slightly negative; raise gsa_N to tighten them.\n'], sens_type);
 end
 
-%% 10. Scenarios from the new literature (papers 22-38) -------------------
+%% 10. Scenarios -------------------
 p.scrubber_type = sens_type;
 
-% (a) capital cost up to the European level of paper 27
+% (a) capital cost up to the European level of Moore et al. 2025
 cx = cell(1, numel(locations));
 for k = 1:numel(locations)
     cx{k} = nh3_model('capex', p, locations{k});
 end
 
-% (b) scrubber switched on only in the first part of the flock (paper 27)
+% (b) scrubber switched on only in the first part of the flock (Moore et al. 2025)
 st = cell(1, numel(locations));
 for k = 1:numel(locations)
     st{k} = nh3_model('strategy', p, locations{k});
 end
 
-% (c) emission reduced at low airflow (paper 33)
+% (c) emission reduced at low airflow (Miles et al. 2012)
 q = p;  q.emission_airflow = true;
-fprintf('\n=== EMISSION-AIRFLOW LINK (paper 33), %s scrubber: base model vs link on ===\n', upper(sens_type));
+fprintf('\n=== EMISSION-AIRFLOW LINK (Miles et al. 2012), %s scrubber: base model vs link on ===\n', upper(sens_type));
 fprintf('%-34s %12s %12s %12s\n', 'Quantity', 'US', 'Gulf', 'Developing');
 e0 = cell(1,3);  e1 = cell(1,3);
 for k = 1:numel(locations)
@@ -241,9 +241,32 @@ for r = 1:size(lines,1)
     fprintf('\n');
 end
 
-% (d) analyses added after the reviews: climate vs economics, best and worst
+% (e) no extrapolation of the spray correlation below 30 ppmv and 2 m/s
+q = p;  q.no_extrapolation = true;
+fprintf('\n=== NO EXTRAPOLATION OF THE SPRAY CORRELATION, %s scrubber ===\n', upper(sens_type));
+fprintf('%-34s %12s %12s %12s\n', 'Quantity', 'US', 'Gulf', 'Developing');
+x0 = cell(1,3);  x1 = cell(1,3);
+for k = 1:numel(locations)
+    x0{k} = nh3_model('economics', p, locations{k});
+    x1{k} = nh3_model('economics', q, locations{k});
+end
+lines = {'Capture % (base)',              @(e) e.capture_pct,         x0; ...
+         'Capture % (no extrapolation)',  @(e) e.capture_pct,         x1; ...
+         'Income/cost % (base)',          @(e) 100*e.revenue/e.total_cost, x0; ...
+         'Income/cost % (no extrap.)',    @(e) 100*e.revenue/e.total_cost, x1; ...
+         'USD per kg NH3 (base)',         @(e) e.cost_per_kg_NH3,     x0; ...
+         'USD per kg NH3 (no extrap.)',   @(e) e.cost_per_kg_NH3,     x1; ...
+         'cents per bird (base)',         @(e) 100*e.cost_per_bird,   x0; ...
+         'cents per bird (no extrap.)',   @(e) 100*e.cost_per_bird,   x1};
+for r = 1:size(lines,1)
+    fprintf('%-34s', lines{r,1});
+    for k = 1:numel(locations), fprintf('%12.2f', lines{r,2}(lines{r,3}{k})); end
+    fprintf('\n');
+end
+
+% (d) further scenarios: climate vs economics, best and worst
 %     corner, cost per spray stage, day-night airflow, calibrated emission
-rv = nh3_model('review', p);
+rv = nh3_model('further', p);
 
 %% 11. Figures for the manuscript -------------------------------------------
 % Every figure is drawn at its printed size (cm), with 8 pt Arial text, so nothing

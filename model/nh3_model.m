@@ -1,7 +1,5 @@
 function varargout = nh3_model(task, varargin)
-%NH3_MODEL  Poultry-house ammonia recovery model (version 9: response to reviews - stage cost, mist eliminator, seasonal
-%            temperature, 2026 price basis, product handling, diurnal ventilation,
-%            climate/economics split, favorable corner, Sobol confidence intervals).
+%NH3_MODEL  Poultry-house ammonia recovery model.
 %
 %   All model equations live in this one file as local functions.
 %   Do not run this file directly. Run  run_nh3_model.m  instead.
@@ -19,17 +17,17 @@ function varargout = nh3_model(task, varargin)
 %     siz = nh3_model('sizing', p, 'us');       cost and capture against scrubber size
 %     opt = nh3_model('optimize', p, 'us');     best design by exhaustive grid search
 %     gsa = nh3_model('global', p, 'us');       Monte Carlo uncertainty + Sobol indices
-%     bp  = nh3_model('bypasscheck', p);        bypass load fraction vs paper 22 (broilers)
+%     bp  = nh3_model('bypasscheck', p);        bypass load fraction vs Melse et al. 2006 (broilers)
 %     st  = nh3_model('strategy', p, 'us');     run the scrubber only in the first part of the flock
-%     cx  = nh3_model('capex', p, 'us');        capital-cost scenarios (up to European level, paper 27)
-%     rv  = nh3_model('review', p);             analyses added after the reviews (version 9)
+%     cx  = nh3_model('capex', p, 'us');        capital-cost scenarios (up to European level, Moore et al. 2025)
+%     rv  = nh3_model('further', p);             further scenarios
 %     nh3_model('figures', D, true, outdir);    journal figures from the run-file results
 %
-%   WHAT VERSION 2 CONTAINS
+%   WHAT THE MODEL CONTAINS
 %     1. House model   : NH3 emitted per day and exhaust airflow per day
 %                        -> NH3 concentration entering the scrubber.
 %     2a. Spray scrubber : published semi-mechanistic model, fitted to lab data
-%                        (paper 15, Hadlocon et al. 2015, Eq. 20 and 21).
+%                        (Hadlocon et al. 2015c, Eq. 20 and 21).
 %     2b. Packed bed     : physics-based rate model. Gas-film mass transfer
 %                        from the Billet & Schultes (1999) correlations, NH3
 %                        back-pressure from pH / Henry's law, pressure drop
@@ -94,9 +92,9 @@ function varargout = nh3_model(task, varargin)
         case 'figures'
             % nh3_model('figures', D, save_flag, outdir): journal figures (see run_nh3_model.m)
             make_figures(varargin{:});
-        case 'review'
+        case 'further'
             p = get_params(varargin);
-            varargout{1} = run_review(p);
+            varargout{1} = run_further(p);
         case 'capex'
             p = get_params(varargin);
             if numel(varargin) >= 2, loc = varargin{2}; else, loc = 'us'; end
@@ -114,7 +112,7 @@ function varargout = nh3_model(task, varargin)
             end
             varargout{1} = simulate_flock(p, season);
         otherwise
-            error('Unknown task "%s". Use params, validate, validate_packed, inputcheck, bypasscheck, flock, economics, sensitivity, sizing, optimize, global, strategy, capex, review or figures.', task);
+            error('Unknown task "%s". Use params, validate, validate_packed, inputcheck, bypasscheck, flock, economics, sensitivity, sizing, optimize, global, strategy, capex, further or figures.', task);
     end
 end
 
@@ -133,39 +131,39 @@ function p = default_params()
     p.M_AS    = 132.14;       % g/mol, (NH4)2SO4
 
     % ---- house and flock
-    p.n_birds      = 25000;   % birds per house (paper 17, Table 1: 100,000-122,800 in 4 houses)
-    p.flock_days   = 49;      % d, market age (papers 17, 18: 42-63 d)
-    p.litter       = 'used';  % 'used' (built-up) or 'new' (papers 18, 19)
+    p.n_birds      = 25000;   % birds per house (Moore et al. 2011, Table 1: 100,000-122,800 in 4 houses)
+    p.flock_days   = 49;      % d, market age (Moore et al. 2011; Wheeler et al. 2006: 42-63 d)
+    p.litter       = 'used';  % 'used' (built-up) or 'new' (Wheeler et al. 2006; Gates et al. 2008)
     p.T_exhaust_C  = 25;      % C, exhaust air temperature used outside the flock simulation
     % Exhaust temperature by season (used in the flock simulation). ASSUMPTION
-    % (paper 20: 20.7-28.9 C in the house; hot-climate houses exhaust warmer air)
+    % (Miles et al. 2014: 20.7-28.9 C in the house; hot-climate houses exhaust warmer air)
     p.T_season = struct('cold', 20, 'mild', 25, 'hot', 31);
     % Day-night swing of the ventilation rate: Q(hour) = Q(day) * (1 + A cos(2 pi (h - 15)/24)),
     % peak at 15:00. A = 0 gives the daily model; A > 0 runs the flock hour by hour.
     p.diurnal_amp  = 0;
 
     % ---- emission model
-    p.emission_model = 'linear';   % 'linear' (paper 19, Eq. 1) or 'quadratic' (paper 20)
-    p.ER_slope       = 0.031;      % g NH3/bird/d per day of age (papers 18, 19; farm range 0.024-0.038)
-    p.new_litter_lag = 6;          % d with no emission on new litter (paper 19, Eq. 1)
-    % Optional link between ventilation and emission (paper 33, Miles et al. 2012):
+    p.emission_model = 'linear';   % 'linear' (Gates et al. 2008, Eq. 1) or 'quadratic' (Miles et al. 2014)
+    p.ER_slope       = 0.031;      % g NH3/bird/d per day of age (Wheeler et al. 2006; Gates et al. 2008; farm range 0.024-0.038)
+    p.new_litter_lag = 6;          % d with no emission on new litter (Gates et al. 2008, Eq. 1)
+    % Optional link between ventilation and emission (Miles et al. 2012):
     % litter releases less NH3 at low airflow. Lab data: airflow 1/3 and 2/3 of the
     % highest gave 59% and 86% of the NH3. Fitted saturating curve
     %     f(x) = (1 - exp(-k x)) / (1 - exp(-k)),  k = 2.3  (gives 0.60 and 0.87)
     % x = house airflow / mild-season airflow on the same day. ASSUMPTION: the
-    % emission slope of papers 18/19 is taken as the mild-season value (x = 1).
+    % emission slope of Wheeler et al. 2006; Gates et al. 2008 is taken as the mild-season value (x = 1).
     p.emission_airflow = false;    % true switches the link on
     p.ea_k             = 2.3;
 
     % ---- ventilation model
-    % Flock-average airflow per house by season (paper 17, text of
+    % Flock-average airflow per house by season (Moore et al. 2011, text of
     % 'Ammonia Emissions in Poultry Houses'), in m3/d:
     p.Q_mean.cold = 0.59e6;   % flocks 4 and 5 (Jan-May): 0.61 and 0.57 million m3/d
     p.Q_mean.mild = 1.31e6;   % flocks 1 and 3: 1.28 and 1.35 million m3/d
     p.Q_mean.hot  = 2.50e6;   % flock 2 (Sept): 2.50 million m3/d
     % Shape over the flock, Q(d) = Q_mean * shape(d), flock mean of shape = 1.
     % 'paper17': daily ventilation of 4 houses, averaged over 5 flocks, digitized
-    %            from paper 17, Fig. 2A (days 1-49, million m3/d), then divided by
+    %            from Moore et al. 2011, Fig. 2A (days 1-49, million m3/d), then divided by
     %            its mean. Low for 3 weeks, rising weeks 4-5, plateau weeks 5-7.
     %            Days 43-49 come from the longer flocks only.
     % 'linear' : Q_mean * (a + b*d/D), a + b/2 = 1 (versions 1-6, an assumption).
@@ -182,45 +180,45 @@ function p = default_params()
 
     % ---- packed bed (counter- or cross-current, acid recirculated over packing)
     % Packing: Euroform PN-110 structured plastic packing, the one used in the
-    % pig-house scrubber model of paper 6 (Table 1: a, void, C_V, C_L).
-    p.pack.a    = 110;       % m2/m3, specific surface area (paper 6, Table 1)
-    p.pack.eps  = 0.936;     % void fraction (paper 6, Table 1)
-    p.pack.C_V  = 0.167;     % gas-side mass-transfer constant (paper 21, Table 2b; paper 6, Table 1).
-                             % Most other packings in paper 21 have 0.3-0.45, so this is the
+    % pig-house scrubber model of Van der Heyden et al. 2016 (Table 1: a, void, C_V, C_L).
+    p.pack.a    = 110;       % m2/m3, specific surface area (Van der Heyden et al. 2016, Table 1)
+    p.pack.eps  = 0.936;     % void fraction (Van der Heyden et al. 2016, Table 1)
+    p.pack.C_V  = 0.167;     % gas-side mass-transfer constant (Billet and Schultes 1999, Table 2b; Van der Heyden et al. 2016, Table 1).
+                             % Most other packings in Billet and Schultes 1999 have 0.3-0.45, so this is the
                              % low end; it is the most uncertain packed-bed parameter.
-    p.pack.C_h  = 0.511;     % hold-up constant        (paper 21, Table 2b, Euroform PN-110)
-    p.pack.C_P0 = 0.250;     % pressure-drop constant  (paper 21, Table 2b, Euroform PN-110)
-    p.bed_height   = 0.90;   % m of packing in the flow direction (paper 6 reference case)
+    p.pack.C_h  = 0.511;     % hold-up constant        (Billet and Schultes 1999, Table 2b, Euroform PN-110)
+    p.pack.C_P0 = 0.250;     % pressure-drop constant  (Billet and Schultes 1999, Table 2b, Euroform PN-110)
+    p.bed_height   = 0.90;   % m of packing in the flow direction (Van der Heyden et al. 2016 reference case)
     p.bed_area     = 6.0;    % m2 face area. ASSUMPTION (design variable)
-    p.v_max_packed = 2.0;    % m/s, highest face velocity allowed (paper 13: 1.7-2.5 m/s)
-    p.u_liquid     = 10;     % m3/h of liquid per m2 of bed (paper 6, Table 1)
-    p.pH           = 3.0;    % recirculating liquid (paper 13: 1.3-5; paper 6: 3.2-4)
+    p.v_max_packed = 2.0;    % m/s, highest face velocity allowed (Melse and Ogink 2005: 1.7-2.5 m/s)
+    p.u_liquid     = 10;     % m3/h of liquid per m2 of bed (Van der Heyden et al. 2016, Table 1)
+    p.pH           = 3.0;    % recirculating liquid (Melse and Ogink 2005: 1.3-5; Van der Heyden et al. 2016: 3.2-4)
     p.TAN          = 1.0;    % mol N/L dissolved ammonium in the liquid. ASSUMPTION
-                             % (paper 6 discharges at 30 g N/L = 2.1 mol/L)
+                             % (Van der Heyden et al. 2016 discharges at 30 g N/L = 2.1 mol/L)
     p.T_liquid_C   = 20;     % C. ASSUMPTION
     p.fan_eff      = 0.5;    % fan + motor efficiency for the extra pressure drop. ASSUMPTION
 
-    % ---- spray scrubber (laboratory module of paper 15)
-    p.col_diameter = 0.356;   % m, round column (paper 15, section 2.4)
-    p.z_contact    = 1.65;    % m, contact height used in Eq. 21 (paper 15)
-    p.n_stages     = 3;       % spray stages per module, 1 to 3 (paper 15)
-    p.P_nozzle     = 0.62;    % MPa, PJ40 nozzle pressure, 0.21 to 0.62 (paper 15, Table 2)
-    p.v_max        = 4.0;     % m/s, highest air velocity tested (papers 3, 15)
+    % ---- spray scrubber (laboratory module of Hadlocon et al. 2015c)
+    p.col_diameter = 0.356;   % m, round column (Hadlocon et al. 2015c, section 2.4)
+    p.z_contact    = 1.65;    % m, contact height used in Eq. 21 (Hadlocon et al. 2015c)
+    p.n_stages     = 3;       % spray stages per module, 1 to 3 (Hadlocon et al. 2015c)
+    p.P_nozzle     = 0.62;    % MPa, PJ40 nozzle pressure, 0.21 to 0.62 (Hadlocon et al. 2015c, Table 2)
+    p.v_max        = 4.0;     % m/s, highest air velocity tested (Hadlocon et al. 2014a; Hadlocon et al. 2015c)
     p.n_modules    = 30;      % number of parallel modules. ASSUMPTION (design variable)
     p.run_days     = [];      % scrubber runs on days 1..run_days only; [] = whole flock.
-                              % Paper 27 suggests running only the first 3-4 weeks.
+                              % Moore et al. 2025 suggests running only the first 3-4 weeks.
     % Air above the scrubber capacity (n_modules * area * v_max) bypasses it.
 
     % ---- utilities and flock schedule (used by the cost model)
-    p.dp_spray       = 20;     % Pa, pressure drop of a spray scrubber (papers 1, 3, 14: 15-26 Pa)
+    p.dp_spray       = 20;     % Pa, pressure drop of a spray scrubber (Hadlocon et al. 2015a; Hadlocon et al. 2014a; Hadlocon et al. 2014b: 15-26 Pa)
     p.dp_mist        = 20;     % Pa, mist eliminator, added to BOTH scrubber types. ASSUMPTION (typ. 10-30 Pa)
-    p.pump_eff       = 0.40;   % pump + motor efficiency. ASSUMPTION (paper 1 field unit implies
+    p.pump_eff       = 0.40;   % pump + motor efficiency. ASSUMPTION (Hadlocon et al. 2015a field unit implies
                                % only about 0.13: 89.5 kWh/d for 49 L/min at 0.59 MPa)
     p.pump_head_packed = 0.15; % MPa, pump pressure for the packed bed (lift + distributor). ASSUMPTION
-    p.water_loss_spray  = 1.0; % mL water evaporated per m3 air treated (paper 1: 0.55-1.14)
-    p.water_loss_packed = 2.0; % mL/m3 (paper 6: 628 m3/yr at 35,000 m3/h)
-    p.flocks_per_year = 6;     % ASSUMPTION: 49 d flock + about 12 d empty (paper 17 had 5 flocks/yr)
-    p.live_weight_kg  = 2.5;   % kg per bird marketed. ASSUMPTION (paper 17: 1.91-3.04 kg)
+    p.water_loss_spray  = 1.0; % mL water evaporated per m3 air treated (Hadlocon et al. 2015a: 0.55-1.14)
+    p.water_loss_packed = 2.0; % mL/m3 (Van der Heyden et al. 2016: 628 m3/yr at 35,000 m3/h)
+    p.flocks_per_year = 6;     % ASSUMPTION: 49 d flock + about 12 d empty (Moore et al. 2011 had 5 flocks/yr)
+    p.live_weight_kg  = 2.5;   % kg per bird marketed. ASSUMPTION (Moore et al. 2011: 1.91-3.04 kg)
 
     % ---- cost basis
     % Capital cost is scaled from published installed costs with
@@ -231,8 +229,8 @@ function p = default_params()
     p.econ.CEPCI_now  = 808;
     p.econ.cost_year  = 2026;
     % Capital cost of extra spray stages and of packing height. The spray reference unit
-    % (paper 1) has three nozzles (stages) per module; each stage fewer saves stage_cost of
-    % the capital, each stage more adds it. ASSUMPTION (15%; 0-25% tested in 'review').
+    % (Hadlocon et al. 2015a) has three nozzles (stages) per module; each stage fewer saves stage_cost of
+    % the capital, each stage more adds it. ASSUMPTION (15%; 0-25% tested in 'further').
     p.econ.stage_cost   = 0.15;
     p.econ.stage_ref    = 3;
     % Packed bed: share of capital that scales with packing height (H_ref = 0.9 m). ASSUMPTION
@@ -242,43 +240,44 @@ function p = default_params()
     % ASSUMPTION: product drawn off at 3 mol N/L (about 200 g AS/L); 5 USD/m3 (range 0-15).
     p.econ.product_N_molL  = 3;
     p.econ.handling_USD_m3 = 5;
-    % Spray: paper 1, 14,776 USD for one unit treating 20,727 m3/h (tests 2011-12).
+    % Spray: Hadlocon et al. 2015a, 14,776 USD for one unit treating 20,727 m3/h (tests 2011-12).
     p.econ.spray_Cref  = 14776;  % USD
     p.econ.spray_Qref  = 20727;  % m3/h
     p.econ.spray_CEPCI = 584.6;  % 2012 annual. VERIFY the index value
-    % Exponent from the two published spray units (paper 1: 14,776 USD at 20,727 m3/h;
-    % paper 14: 2,645 USD at 1,028 m3/h):  n = ln(14776/2645)/ln(20727/1028) = 0.57
+    % Exponent from the two published spray units (Hadlocon et al. 2015a: 14,776 USD at 20,727 m3/h;
+    % Hadlocon et al. 2014b: 2,645 USD at 1,028 m3/h):  n = ln(14776/2645)/ln(20727/1028) = 0.57
     p.econ.spray_n     = 0.57;
-    % Packed: paper 13, Table 5: 1.3 USD per broiler place for a 30,000-bird house with
+    % Packed: Melse and Ogink 2005, Table 5: 1.3 USD per broiler place for a 30,000-bird house with
     % 75,000 m3/h maximum airflow = 39,000 USD. LOW CONFIDENCE: the paper scaled this
-    % from pig houses. Paper 10 quotes up to 250,000 USD per poultry house in Europe.
+    % from pig houses. Moore et al. 2018 quotes up to 250,000 USD per poultry house in Europe.
     p.econ.packed_Cref  = 39000; % USD
     p.econ.packed_Qref  = 75000; % m3/h
     p.econ.packed_CEPCI = 444.2; % 2004 annual. VERIFY the index value
     p.econ.packed_n     = 0.6;   % six-tenths rule. ASSUMPTION
-    p.econ.life_years   = 10;    % paper 13 (10% depreciation)
-    p.econ.maint_frac   = 0.03;  % of capital per year (paper 13, Table 5)
+    p.econ.life_years   = 10;    % Melse and Ogink 2005 (10% depreciation)
+    p.econ.maint_frac   = 0.03;  % of capital per year (Melse and Ogink 2005, Table 5)
     p.econ.labour_h_week = 2;    % h/week of attention while birds are in the house. ASSUMPTION
     p.econ.AS_value_factor = 1.0;% fraction of the granular AS price obtained for the liquid
-                                 % product. 1.0 follows paper 1; a solution will probably fetch less.
+                                 % product. 1.0 follows Hadlocon et al. 2015a; a solution will probably fetch less.
 
     % ---- multipliers used by the sensitivity analysis (1 = base case)
-    p.kya_factor = 1.0;        % on the spray mass-transfer coefficient. Paper 15's own data are
+    p.kya_factor = 1.0;        % on the spray mass-transfer coefficient. The data of Hadlocon et al. 2015c are
                                % 1.17-1.36 times its correlation (CHECK 1), so range 1.0-1.36
     p.Q_scale    = 1.0;        % on the house ventilation rate
     p.econ.capex_factor = 1.0; % on the capital cost
     p.override = struct();     % location prices to replace, e.g. p.override.price_AS = 500
     p.dp_limit = 80;           % Pa (60 packing + 20 mist eliminator), highest TOTAL added pressure (scrubber + mist eliminator) poultry fans tolerate
-                               % (paper 3: poultry fans work against 0-60 Pa)
+                               % (Hadlocon et al. 2014a: poultry fans work against 0-60 Pa)
     p.capex_high = 3.0;        % top of the capital-cost factor range in the uncertainty analysis.
-                               % Paper 27: European scrubbers cost over 250,000 USD per house,
+                               % Moore et al. 2025: European scrubbers cost over 250,000 USD per house,
                                % about 8x our spray estimate; run_capex shows that case separately.
 
-    % ---- validity range of the Kya correlation (paper 15, below Eq. 21)
+    % ---- validity range of the Kya correlation (Hadlocon et al. 2015c, below Eq. 21)
     p.range.QL  = [15.31 79.49];    % cm3/s per module
     p.range.D32 = [90 122];         % um
     p.range.C   = [30 300];         % ppmv
     p.range.G   = [81.75 163.50];   % mol/s/m2  (about 2 to 4 m/s)
+    p.no_extrapolation = false;     % true: efficiency limited to the edge of the fitted range
 end
 
 function p = get_params(args)
@@ -295,11 +294,11 @@ end
 function E = emission_rate(day, p)
 % NH3 emitted by the whole house, kg NH3/d, on each day of the flock.
 %
-% 'linear'    paper 19, Eq. 1 (slope measured in paper 18):
+% 'linear'    Gates et al. 2008, Eq. 1 (slope measured in Wheeler et al. 2006):
 %                ER = 0.031 * x   [g NH3/bird/d]
 %                used litter: x = bird age
 %                new litter : x = 0 for age < 7, x = age - 6 afterwards
-% 'quadratic' paper 20: NH3 = 0.0094 d^2 + 0.2542 d + 3.5663  [kg/d per house]
+% 'quadratic' Miles et al. 2014: NH3 = 0.0094 d^2 + 0.2542 d + 3.5663  [kg/d per house]
 %                measured in a house with about 28,000 birds, so it is
 %                scaled here by n_birds/28000.
     day = day(:);
@@ -345,7 +344,7 @@ function Q = ventilation_rate(day, season, p)
 end
 
 function f = airflow_factor(day, season, p)
-% Multiplier on emission from the ventilation-emission link (paper 33).
+% Multiplier on emission from the ventilation-emission link (Miles et al. 2012).
 % Returns ones when p.emission_airflow is false.
     day = day(:);
     if ~p.emission_airflow
@@ -369,11 +368,11 @@ function C = concentration_ppmv(E, Q, p)
 end
 
 % =====================================================================
-%  SCRUBBER MODEL  (paper 15)
+%  SCRUBBER MODEL  (Hadlocon et al. 2015c)
 % =====================================================================
 function [QL, D32] = pj40_nozzle(P_MPa)
 % One PJ40 full-cone nozzle: liquid flow QL (cm3/s) and Sauter mean droplet
-% diameter D32 (um) against operating pressure. Paper 15, Table 2
+% diameter D32 (um) against operating pressure. Hadlocon et al. 2015c, Table 2
 % (manufacturer data), linear interpolation between the three pressures.
     P_tab   = [0.21 0.41 0.62];
     QL_tab  = [15.31 21.64 26.51];
@@ -387,7 +386,7 @@ end
 
 function Kya = kya_spray(QL, D32, C_in)
 % Overall gas-side volumetric mass-transfer coefficient, mol/s/m3 per unit
-% mole-fraction difference. Paper 15, Eq. 20:
+% mole-fraction difference. Hadlocon et al. 2015c, Eq. 20:
 %     Kya = 3916 * QL^0.85 * D32^(-1.30) * C_in^(-0.21)
 % QL   total liquid flow in the module, cm3/s
 % D32  Sauter mean diameter, um
@@ -396,7 +395,7 @@ function Kya = kya_spray(QL, D32, C_in)
 end
 
 function eta = scrubber_efficiency(Kya, z, G)
-% NH3 removal efficiency (fraction). Paper 15, Eq. 17/21:
+% NH3 removal efficiency (fraction). Hadlocon et al. 2015c, Eq. 17/21:
 %     eta = 1 - exp( -Kya * z / G )
 % Derivation: plug flow of gas, NH3 reacts instantly and irreversibly with
 % the acid, so the driving force is the gas mole fraction itself:
@@ -414,12 +413,22 @@ end
 function [eta, info] = scrubber_point(C_in, v, P_MPa, n_stages, z, D32_override, QL_override, T_C, p)
 % Efficiency of one spray module at one operating point, with range checks.
     [QL1, D32] = pj40_nozzle(P_MPa);
-    QL = QL1 * n_stages;                 % each stage has one nozzle (paper 15)
+    QL = QL1 * n_stages;                 % each stage has one nozzle (Hadlocon et al. 2015c)
     if ~isempty(D32_override), D32 = D32_override; end
     if ~isempty(QL_override),  QL  = QL_override;  end
     G   = gas_molar_flux(v, T_C, p);
-    Kya = p.kya_factor * kya_spray(QL, D32, C_in);
-    eta = scrubber_efficiency(Kya, z, G);
+    if p.no_extrapolation
+        % Conservative case: no credit from extrapolating the correlation.
+        % Concentration and gas flux below the fitted range are raised to the
+        % lower edge of the range, so the efficiency never exceeds the value
+        % the correlation gives at the edge of its tested conditions.
+        C_k = max(C_in, p.range.C(1));
+        G_k = max(G, p.range.G(1));
+    else
+        C_k = C_in;  G_k = G;
+    end
+    Kya = p.kya_factor * kya_spray(QL, D32, C_k);
+    eta = scrubber_efficiency(Kya, z, G_k);
     info.QL = QL;  info.D32 = D32;  info.G = G;  info.Kya = Kya;
     info.in_range = in_range(QL, p.range.QL) & in_range(D32, p.range.D32) & ...
                     in_range(C_in, p.range.C) & in_range(G, p.range.G);
@@ -465,7 +474,7 @@ end
 
 function [kGa, info] = packed_mass_transfer(v, p)
 % Volumetric gas-side mass-transfer coefficient kG*a (1/s) of an irrigated
-% packing, Billet & Schultes (1999), Trans IChemE 77A, 498-504 (paper 21, Eq. 6-16).
+% packing, Billet & Schultes (1999), Trans IChemE 77A, 498-504 (Eq. 6-16).
 %
 %   hydraulic diameter      d_h = 4*eps/a
 %   liquid hold-up          h_L = (12 nu_L u_L a^2 / g)^(1/3) * (a_h/a)^(2/3)
@@ -521,13 +530,13 @@ end
 
 function dp = packed_pressure_drop(v, p)
 % Pressure drop of the irrigated packing, Pa. Billet & Schultes (1999),
-% paper 21, Eq. 28-30, below the loading point, wall effect neglected
+% Billet and Schultes 1999, Eq. 28-30, below the loading point, wall effect neglected
 % (large bed). The factor (h_L/h_L,S)^0.3 of Eq. 29 is taken as 1, which
 % slightly overestimates the pressure drop well below the loading point:
 %   dry :  dp0/H = psi0 * a/eps^3 * rho_G v^2 / 2
 %          psi0  = C_P0 (64/Re_G + 1.8/Re_G^0.08),  Re_G = v d_p / ((1-eps) nu_G),  d_p = 6(1-eps)/a
 %   wet :  dp/dp0 = (eps/(eps - h_L))^1.5 * exp(13300/a^1.5 * sqrt(Fr_L))
-% The mist eliminator is NOT included (paper 3 measured 15-55 Pa for one).
+% The mist eliminator is NOT included (Hadlocon et al. 2014a measured 15-55 Pa for one).
     a = p.pack.a;  eps = p.pack.eps;
     G = air_properties(p.T_exhaust_C, p);
     [~, info] = packed_mass_transfer(v, p);
@@ -546,15 +555,15 @@ end
 function val = run_validation_packed(p)
 % Packed-bed model against one published model result and three full-scale
 % measurement programmes. Each case is run twice: with the packing constant
-% C_V of paper 6 (0.167) and with a value typical of other packings (0.35),
+% C_V of Van der Heyden et al. 2016 (0.167) and with a value typical of other packings (0.35),
 % because the packings used in the field studies are not identified.
 
     % {label, a, bed depth (m), face velocity (m/s), pH, inlet ppmv, measured %, note}
     cs = { ...
-      'P6 reference case (their model), pigs',     110, 0.90, 1.62, 4.0, 14.0, 84, 'model vs model'; ...
-      'P13 Hol 1999, 30,000 broilers',             150, 0.90, 1.39, 4.0, 18.8, 95, 'depth assumed 0.9 m'; ...
-      'P13 Vrielink 1997, 66 pigs',                100, 1.53, 0.93, 3.0,  8.2, 91, 'depth from volume/area'; ...
-      'P13 Verdoes 1999, 54 pigs',                 100, 0.90, 0.67, 4.0, 15.6, 99, 'depth from volume/area'};
+      'Van der Heyden 2016 (model), pigs',     110, 0.90, 1.62, 4.0, 14.0, 84, 'model vs model'; ...
+      'Hol 1999, 30,000 broilers',             150, 0.90, 1.39, 4.0, 18.8, 95, 'depth assumed 0.9 m'; ...
+      'Vrielink 1997, 66 pigs',                100, 1.53, 0.93, 3.0,  8.2, 91, 'depth from volume/area'; ...
+      'Verdoes 1999, 54 pigs',                 100, 0.90, 0.67, 4.0, 15.6, 99, 'depth from volume/area'};
     CV = [0.167 0.35];
 
     fprintf('\n=== CHECK 3: packed-bed model (Billet & Schultes) against published data ===\n');
@@ -576,12 +585,12 @@ function val = run_validation_packed(p)
         fprintf('%-40s %9.0f %12.1f %12.1f   %s\n', cs{k,1}, cs{k,7}, e(1), e(2), cs{k,8});
     end
     fprintf(['Removal efficiency in %%. Face velocities are average airflow / face area, with the\n' ...
-             'face area from maximum airflow / maximum velocity (paper 13, Table 2). Liquid load\n' ...
-             '10 m3/h/m2 assumed in every case. Void fraction and C_h kept at the paper 6 values.\n']);
+             'face area from maximum airflow / maximum velocity (Melse and Ogink 2005, Table 2). Liquid load\n' ...
+             '10 m3/h/m2 assumed in every case. Void fraction and C_h kept at the Van der Heyden et al. 2016 values.\n']);
 
     % pressure drop at the reference case
     q = p;  q.T_exhaust_C = 22;
-    fprintf('Pressure drop at the paper 6 reference case (0.9 m, 1.62 m/s): %.0f Pa (packing only).\n', ...
+    fprintf('Pressure drop at the Van der Heyden et al. 2016 reference case (0.9 m, 1.62 m/s): %.0f Pa (packing only).\n', ...
             packed_pressure_drop(1.62, q));
     fprintf('NH3 back-pressure of the liquid at 20 C, 1 mol N/L:  pH 3: %.3f   pH 5: %.2f   pH 6: %.1f   pH 7: %.0f ppmv\n', ...
             nh3_equilibrium_ppmv(3, 1, 20, p), nh3_equilibrium_ppmv(5, 1, 20, p), ...
@@ -598,24 +607,24 @@ function val = run_validation(p)
     T = 25;   % C, laboratory air. ASSUMPTION (not stated for each test)
     c = {};   % {label, quantity, measured, predicted, in_range, note}
 
-    % --- A. Mass-transfer coefficient, paper 15 section 3.2.4 (30 ppmv, 0.62 MPa)
+    % --- A. Mass-transfer coefficient, Hadlocon et al. 2015c section 3.2.4 (30 ppmv, 0.62 MPa)
     [QL1, D32] = pj40_nozzle(0.62);
-    c(end+1,:) = {'P15 Kya, 1 stage, 30 ppmv, 0.62 MPa', 'Kya', 121.34, ...
+    c(end+1,:) = {'Hadlocon 2015c: Kya, 1 stage, 30 ppmv, 0.62 MPa', 'Kya', 121.34, ...
                   kya_spray(QL1, D32, 30), true, 'mol/s/m3'};
-    c(end+1,:) = {'P15 Kya, 3 stages, 30 ppmv, 0.62 MPa', 'Kya', 265.87, ...
+    c(end+1,:) = {'Hadlocon 2015c: Kya, 3 stages, 30 ppmv, 0.62 MPa', 'Kya', 265.87, ...
                   kya_spray(3*QL1, D32, 30), true, 'mol/s/m3'};
 
-    % --- B. Removal efficiency, paper 3 abstract (lab, same type of module)
+    % --- B. Removal efficiency, Hadlocon et al. 2014a abstract (lab, same type of module)
     [e, i] = scrubber_point(100, 4.0, 0.62, 3, p.z_contact, [], [], T, p);
-    c(end+1,:) = {'P3 3 stages, 100 ppmv, 4 m/s, 0.62 MPa', 'eta %', 86, 100*e, i.in_range, ''};
+    c(end+1,:) = {'Hadlocon 2014a: 3 stages, 100 ppmv, 4 m/s, 0.62 MPa', 'eta %', 86, 100*e, i.in_range, ''};
     [e, i] = scrubber_point(400, 4.0, 0.62, 3, p.z_contact, [], [], T, p);
-    c(end+1,:) = {'P3 3 stages, 400 ppmv, 4 m/s, 0.62 MPa', 'eta %', 74, 100*e, i.in_range, 'C above 300'};
+    c(end+1,:) = {'Hadlocon 2014a: 3 stages, 400 ppmv, 4 m/s, 0.62 MPa', 'eta %', 74, 100*e, i.in_range, 'C above 300'};
     [e, i] = scrubber_point(30, 4.0, 0.51, 1, p.z_contact, [], [], T, p);
-    c(end+1,:) = {'P3 1 stage, 30 ppmv, 4 m/s, 0.51 MPa', 'eta %', 91, 100*e, i.in_range, ''};
+    c(end+1,:) = {'Hadlocon 2014a: 1 stage, 30 ppmv, 4 m/s, 0.51 MPa', 'eta %', 91, 100*e, i.in_range, ''};
     [e, i] = scrubber_point(30, 3.0, 0.51, 1, p.z_contact, [], [], T, p);
-    c(end+1,:) = {'P3 1 stage, 30 ppmv, 3 m/s, 0.51 MPa', 'eta %', 95, 100*e, i.in_range, ''};
+    c(end+1,:) = {'Hadlocon 2014a: 1 stage, 30 ppmv, 3 m/s, 0.51 MPa', 'eta %', 95, 100*e, i.in_range, ''};
 
-    % --- C. Field scrubber, paper 1 Table 3 (poultry manure composting).
+    % --- C. Field scrubber, Hadlocon et al. 2015a Table 3 (poultry manure composting).
     % 15 hexagonal modules, 0.16 m2 each, 1.2 m contact height, 3 PJ40 nozzles
     % per module, droplet 113 um. Seasonal inlet and efficiency from Table 3.
     % The airflow during the tests is ambiguous in the paper: 20,727 m3/h
@@ -631,14 +640,14 @@ function val = run_validation(p)
         v = Qair(k) / 3600 / A15;
         for j = 1:4
             [e, i] = scrubber_point(Cin(j), v, 0.59, 3, 1.2, 113, QLmod(j), T, p);
-            c(end+1,:) = {sprintf('P1 field %s, %s (%.2f m/s)', seas{j}, tag{k}, v), ...
+            c(end+1,:) = {sprintf('Hadlocon 2015a: field %s, %s (%.2f m/s)', seas{j}, tag{k}, v), ...
                           'eta %', meas(j), 100*e, i.in_range, ''}; %#ok<AGROW>
         end
     end
 
     % --- print
-    fprintf('\n=== CHECK 1: spray model (paper 15, Eq. 20-21) against published data ===\n');
-    fprintf('%-46s %-6s %9s %9s %8s  %s\n', 'Case', 'Qty', 'Measured', 'Model', 'Diff', 'In range');
+    fprintf('\n=== CHECK 1: spray model (Hadlocon et al. 2015c, Eq. 20-21) against published data ===\n');
+    fprintf('%-56s %-6s %9s %9s %8s  %s\n', 'Case', 'Qty', 'Measured', 'Model', 'Diff', 'In range');
     n = size(c,1);
     val.label = c(:,1);  val.measured = zeros(n,1);  val.model = zeros(n,1);
     val.in_range = false(n,1);
@@ -646,10 +655,10 @@ function val = run_validation(p)
         val.measured(k) = c{k,3};  val.model(k) = c{k,4};  val.in_range(k) = c{k,5};
         d = c{k,4} - c{k,3};
         if c{k,5}, r = 'yes'; else, r = 'NO (extrapolated)'; end
-        fprintf('%-46s %-6s %9.1f %9.1f %+8.1f  %s\n', c{k,1}, c{k,2}, c{k,3}, c{k,4}, d, r);
+        fprintf('%-56s %-6s %9.1f %9.1f %+8.1f  %s\n', c{k,1}, c{k,2}, c{k,3}, c{k,4}, d, r);
     end
     fprintf(['Diff = model - measured. For "eta %%" rows it is in percentage points.\n' ...
-             'Not checked: paper 14 (swine) uses an AAP01 nozzle with 250-329 um droplets,\n' ...
+             'Not checked: Hadlocon et al. 2014b (swine) uses an AAP01 nozzle with 250-329 um droplets,\n' ...
              'outside the 90-122 um range of the correlation.\n']);
 end
 
@@ -658,12 +667,12 @@ end
 % =====================================================================
 function chk = run_input_check(p)
 % Flock-average NH3 concentration and emission predicted by the house model
-% against the measurements of paper 17 (four Arkansas broiler houses).
+% against the measurements of Moore et al. 2011 (four Arkansas broiler houses).
     seasons  = {'cold', 'mild', 'hot'};
     C_meas   = [42.5 20.0 11.1];   % ppm: flocks 4-5 (42.9, 42.2); flocks 1, 3 (19.3, 20.6); flock 2
     E_meas   = [13.6 16.3 14.0];   % kg/d: flocks 4-5 (12.5, 14.7); flocks 1, 3 (17.0, 15.6); flock 2
     day = (1:p.flock_days)';
-    fprintf('\n=== CHECK 2: house input model against paper 17 (flock averages) ===\n');
+    fprintf('\n=== CHECK 2: house input model against Moore et al. 2011 (flock averages) ===\n');
     fprintf('%-6s %12s %10s %10s %12s %10s %10s\n', 'Season', 'C meas', 'C model', 'C airflow', 'E meas', 'E model', 'E airflow');
     fprintf('%-6s %12s %10s %10s %12s %10s %10s\n', '', '(ppm)', '', 'link on', '(kg/d)', '', 'link on');
     chk.season = seasons;  chk.C_meas = C_meas;  chk.E_meas = E_meas;
@@ -680,7 +689,7 @@ function chk = run_input_check(p)
                 chk.C_link(k), E_meas(k), chk.E_model(k), chk.E_link(k));
     end
     rmse = @(a,b) sqrt(mean((a-b).^2));
-    fprintf('RMSE of emission: %.1f kg/d without the airflow link, %.1f kg/d with it (paper 33).\n', ...
+    fprintf('RMSE of emission: %.1f kg/d without the airflow link, %.1f kg/d with it (Miles et al. 2012).\n', ...
             rmse(chk.E_model, E_meas), rmse(chk.E_link, E_meas));
     fprintf(['Measured values are averages of the flocks in that season. The ventilation\n' ...
              'averages are taken from the same paper, so only the emission model and the\n' ...
@@ -816,17 +825,17 @@ function L = location_data(name)
 % sheet Product_Economics, for the sources). "ASSUMPTION" = my choice.
 %
 % season_mix = share of the year's flocks grown under the cold / mild / hot
-% ventilation profile of paper 17.
+% ventilation profile of Moore et al. 2011.
     switch lower(name)
         case 'us'
             L.label      = 'United States';
-            L.season_mix = [0.4 0.4 0.2];  % paper 17: of 5 flocks, 2 cold, 2 mild, 1 hot
+            L.season_mix = [0.4 0.4 0.2];  % Moore et al. 2011: of 5 flocks, 2 cold, 2 mild, 1 hot
             L.price_AS   = 400;    % USD/t ammonium sulphate (2026 reports: 288-474 bulk; 650 retail)
             L.price_acid = 170;    % USD/t H2SO4 (2026 reports: 117-177; one report 318)
             L.price_elec = 0.11;   % USD/kWh. Between US industrial (0.089) and commercial (0.139). ASSUMPTION
             L.price_water = 1.0;   % USD/m3. ASSUMPTION
             L.wage       = 18;     % USD/h farm labour. ASSUMPTION
-            L.interest   = 0.06;   % paper 13 used 6%
+            L.interest   = 0.06;   % Melse and Ogink 2005 used 6%
             L.range_AS   = [288 650];      % bulk low ... retail
             L.range_acid = [117 318];
             L.range_elec = [0.089 0.139];  % industrial ... commercial average
@@ -958,7 +967,7 @@ function eco = annual_economics(p, loc)
     eco.cost_per_kg_live   = eco.cost_per_bird / p.live_weight_kg;        % USD per kg live weight
     eco.breakeven_AS_price = eco.total_cost / eco.AS_t;                   % USD/t at which net cost = 0
     eco.N_recovered_g_bird = eco.NH3_captured_kg * 14.007/p.M_NH3 * 1000 / birds;  % g N per bird
-    % Paper 27 states that the acid costs more than the N is worth. Per kg N captured:
+    % Moore et al. 2025 states that the acid costs more than the N is worth. Per kg N captured:
     eco.acid_per_kgN   = p.M_H2SO4/(2*14.007) / 1000 * L.price_acid;                   % USD acid
     eco.AS_value_per_kgN = p.M_AS/(2*14.007) / 1000 * L.price_AS * p.econ.AS_value_factor;  % USD income
     eco.prices = L;
@@ -1050,17 +1059,17 @@ function v = uncertain_inputs(p, loc)
       'Sulphuric acid price, USD/t',    {'override','price_acid'},    L.range_acid(1), L.range_acid(2), '2026 market reports'; ...
       'Electricity price, USD/kWh',     {'override','price_elec'},    L.range_elec(1), L.range_elec(2), 'tariffs'; ...
       'Interest rate',                  {'override','interest'},      0.04,            0.12,            'assumption'; ...
-      'Emission slope, g/bird/d/d',     {'ER_slope'},                 0.024,           0.038,           'paper 18, farm range'; ...
+      'Emission slope, g/bird/d/d',     {'ER_slope'},                 0.024,           0.038,           'Wheeler et al. 2006, farm range'; ...
       'Ventilation scale',              {'Q_scale'},                  0.8,             1.2,             'assumption'; ...
       'Flocks per year',                {'flocks_per_year'},          5,               7,               'assumption'; ...
       'Liquid product value factor',    {'econ','AS_value_factor'},   0.5,             1.0,             'assumption'; ...
-      'Capital cost factor',            {'econ','capex_factor'},      0.7,             p.capex_high,    'assumption; paper 27'; ...
-      'Pump efficiency',                {'pump_eff'},                 0.13,            0.60,            'paper 1 field ... good pump'; ...
+      'Capital cost factor',            {'econ','capex_factor'},      0.7,             p.capex_high,    'assumption; Moore et al. 2025'; ...
+      'Pump efficiency',                {'pump_eff'},                 0.13,            0.60,            'Hadlocon et al. 2015a field ... good pump'; ...
       'Product handling, USD/m3',       {'econ','handling_USD_m3'},   0,               15,              'assumption'};
     if strcmpi(p.scrubber_type, 'packed')
-        v(end+1,:) = {'Packing constant C_V', {'pack','C_V'}, 0.167, 0.35, 'paper 21, Table 2'};
+        v(end+1,:) = {'Packing constant C_V', {'pack','C_V'}, 0.167, 0.35, 'Billet and Schultes 1999, Table 2'};
     else
-        v(end+1,:) = {'Spray mass-transfer factor', {'kya_factor'}, 0.75, 1.36, 'paper 15 data; widened downward'};
+        v(end+1,:) = {'Spray mass-transfer factor', {'kya_factor'}, 0.75, 1.36, 'Hadlocon et al. 2015c data; widened downward'};
     end
 end
 
@@ -1168,8 +1177,8 @@ function gsa = run_global(p, loc, N)
 %                   S_i  = mean( (fB - mean) .* (fABi - fA) ) / Var
 %                   ST_i = mean( (fA - fABi).^2 ) / (2 Var)
 %
-% Sampling uses a scrambled Halton sequence (deterministic), so MATLAB and
-% Octave give identical results. Confidence intervals of the total indices
+% Sampling uses a scrambled Halton sequence (deterministic), so results are
+% reproducible. Confidence intervals of the total indices
 % by bootstrap over the N rows. Cost: N*(k+2) model runs, k = number of inputs.
     v = uncertain_inputs(p, loc);
     k = size(v,1);
@@ -1255,7 +1264,7 @@ function H = halton_points(N, d)
 % N points of the d-dimensional scrambled Halton sequence in (0,1), first 20
 % skipped. Each dimension uses a fixed permutation of the digits 1..b-1
 % (0 stays 0), drawn with the Park-Miller generator, so the scrambling is
-% deterministic and MATLAB and Octave give identical points. Scrambling
+% deterministic and the points are reproducible. Scrambling
 % removes the correlation between dimensions of the plain Halton sequence.
     pr = [2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 101 103 107 109 113];
     if d > numel(pr), error('Too many dimensions for halton_points.'); end
@@ -1288,10 +1297,10 @@ function [st, u] = park_miller(st)
 end
 
 % =====================================================================
-%  CHECK 4: BYPASS LOAD FRACTION AGAINST PAPER 22 (broilers)
+%  CHECK 4: BYPASS LOAD FRACTION AGAINST Melse et al. 2006 (broilers)
 % =====================================================================
 function bp = run_bypass_check(p)
-% Paper 22 (Melse et al. 2006) analysed hourly broiler-house data from the
+% Melse et al. (2006) analysed hourly broiler-house data from the
 % Netherlands: a scrubber that treats airflow only up to 50% of the maximum
 % ventilation rate (1.75 m3/bird/h), with the rest bypassed, still receives
 % about 85% of the NH3 load. Here the same quantity is computed from our
@@ -1305,9 +1314,9 @@ function bp = run_bypass_check(p)
     bp.season = seasons;  bp.set_frac = set_frac;  bp.load = zeros(3, numel(set_frac));
     bp.design = zeros(1,3);
     Q_design = p.n_modules * pi/4 * p.col_diameter^2 * p.v_max * 86400;   % m3/d, spray design
-    fprintf('\n=== CHECK 4: share of NH3 load reaching a bypassed scrubber, against paper 22 ===\n');
+    fprintf('\n=== CHECK 4: share of NH3 load reaching a bypassed scrubber, against Melse et al. 2006 ===\n');
     fprintf('%-8s %12s %18s %18s %18s %18s\n', 'Season', 'Q max', 'set 25% of max', 'set 50% of max', 'set 75% of max', 'our design');
-    fprintf('%-8s %12s %18s %18s %18s %18s\n', '', 'm3/bird/h', '', '(paper 22: ~85%)', '', sprintf('%.2f m3/bird/h', Q_design/24/p.n_birds));
+    fprintf('%-8s %12s %18s %18s %18s %18s\n', '', 'm3/bird/h', '', '(Melse et al. 2006: ~85%)', '', sprintf('%.2f m3/bird/h', Q_design/24/p.n_birds));
     for k = 1:3
         Q = ventilation_rate(day, seasons{k}, p);
         E = emission_rate(day, p) .* airflow_factor(day, seasons{k}, p);
@@ -1318,11 +1327,11 @@ function bp = run_bypass_check(p)
         bp.design(k) = 100 * sum(E .* min(Q, Q_design) ./ Q) / sum(E);
         fprintf('%-8s %12.2f %17.1f%% %17.1f%% %17.1f%% %17.1f%%\n', seasons{k}, max(Q)/24/p.n_birds, bp.load(k,:), bp.design(k));
     end
-    fprintf(['Paper 22, broilers (Dutch data): a bypass set at 1.75 m3/bird/h (50%% of the hourly\n' ...
+    fprintf(['Melse et al. 2006, broilers (Dutch data): a bypass set at 1.75 m3/bird/h (50%% of the hourly\n' ...
              'maximum, 3.5 m3/bird/h) still sends about 85%% of the NH3 load through the scrubber.\n' ...
              'Compare in absolute terms with the "our design" column (1.72 m3/bird/h): the Dutch\n' ...
              'climate lies between our cold and mild seasons. The "%% of max" columns are not\n' ...
-             'directly comparable: our maximum is a daily mean, paper 22 used hourly data, whose\n' ...
+             'directly comparable: our maximum is a daily mean, Melse et al. 2006 used hourly data, whose\n' ...
              'maximum is higher, so the same %% setting is a smaller scrubber in our model.\n']);
 end
 
@@ -1330,7 +1339,7 @@ end
 %  OPERATING STRATEGY: SCRUBBER ON ONLY IN THE FIRST PART OF THE FLOCK
 % =====================================================================
 function st = run_strategy(p, loc)
-% Paper 27 suggests running a scrubber only during the first 3-4 weeks,
+% Moore et al. 2025 suggests running a scrubber only during the first 3-4 weeks,
 % when ventilation is low. Here the scrubber (same size) runs on days
 % 1..run_days and is switched off afterwards (no pumping, no capture).
     days = [21 28 35 42 p.flock_days];
@@ -1358,11 +1367,11 @@ end
 % =====================================================================
 function cx = run_capex(p, loc)
 % Net cost when the capital cost is higher than our scaled estimate:
-% factor 1 (base), 2, 3, and the European level of paper 27 (250,000 USD
+% factor 1 (base), 2, 3, and the European level of Moore et al. 2025 (250,000 USD
 % per house for a full-capacity scrubber).
     C0 = capital_cost(p);
     f  = [1 2 3 250000/C0];
-    lab = {'base estimate', '2 x base', '3 x base', 'European level (paper 27)'};
+    lab = {'base estimate', '2 x base', '3 x base', 'European level (Moore et al. 2025)'};
     n = numel(f);
     cx.factor = f;  cx.label = lab;  cx.capital = zeros(1,n);  cx.cost_per_kg = zeros(1,n);
     cx.cost_per_bird = zeros(1,n);
@@ -1380,15 +1389,15 @@ function cx = run_capex(p, loc)
 end
 
 % =====================================================================
-%  ANALYSES ADDED AFTER THE REVIEWS (version 9)
+%  FURTHER SCENARIOS
 % =====================================================================
-function rv = run_review(p)
+function rv = run_further(p)
 % 1. Climate against economics: net cost with the climate (season mix) of one
 %    location and the prices of another.
 % 2. Most and least favorable corner of the uncertainty ranges.
 % 3. Does the optimal number of spray stages survive a cost per stage?
 % 4. Day-night swing of the ventilation (hourly time step).
-% 5. Emission slope calibrated to the measured emission of paper 17.
+% 5. Emission slope calibrated to the measured emission of Moore et al. 2011.
     locs = {'us', 'gulf', 'developing'};  nm = {'US', 'Gulf', 'Developing'};
     q = p;  q.scrubber_type = 'spray';
 
@@ -1486,11 +1495,11 @@ function rv = run_review(p)
     end
     fprintf('Amplitude A: hourly airflow = daily mean x (1 + A cos(2 pi (h - 15)/24)).\n');
 
-    % ---- 5. emission slope calibrated to paper 17
+    % ---- 5. emission slope calibrated to Moore et al. 2011
     E_meas = mean([13.6 16.3 14.0]);
     day = (1:p.flock_days)';  E_mod = mean(emission_rate(day, p));
     slope = p.ER_slope * E_meas / E_mod;
-    fprintf('\n=== EMISSION SLOPE CALIBRATED TO PAPER 17 (%.4f instead of %.4f g/bird/d/d) ===\n', slope, p.ER_slope);
+    fprintf('\n=== EMISSION SLOPE CALIBRATED TO Moore et al. 2011 (%.4f instead of %.4f g/bird/d/d) ===\n', slope, p.ER_slope);
     fprintf('%-12s %14s %14s %14s %14s\n', 'Location', 'USD/kg base', 'USD/kg calib.', 'c/bird base', 'c/bird calib.');
     rv.calib = zeros(3,4);
     for e = 1:3
@@ -1542,7 +1551,7 @@ function make_figures(D, save_flag, outdir)
 end
 
 function g = hzeros(n)
-% Array for graphics handles: graphics objects in MATLAB (gobjects), numbers in Octave.
+% Array for graphics handles: graphics objects (gobjects).
     try, g = gobjects(1, n); catch, g = zeros(1, n); end
 end
 
@@ -1892,7 +1901,7 @@ function save_panel(ax, base, S)
     W = w + 2.4;  H = ht + 2.0;
     h = new_fig('panel', W, H);
     lg = [];
-    try, lg = get(ax, 'Legend'); catch, end          % MATLAB only; Octave: panel without legend
+    try, lg = get(ax, 'Legend'); catch, end
     try
         if ~isempty(lg) && isgraphics(lg) && ~strcmp(get(lg, 'Location'), 'none')
             c = copyobj([lg ax], h);  a2 = c(2);

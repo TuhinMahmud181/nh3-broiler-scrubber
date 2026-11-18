@@ -1,18 +1,19 @@
 cff-version: 1.2.0
-message: "If you use this model, please cite the article and this software."
-repository-code: "https://github.com/TuhinMahmud181/nh3-broiler-scrubber"
-title: "Ammonia recovery from broiler-house exhaust: process and cost model (MATLAB)"
+message: "If you use this code, please cite it as below."
+title: "Ammonia recovery from broiler-house exhaust: process and cost model"
 type: software
 version: "1.0.0"
+date-released: "2026-11-19"
 license: MIT
+repository-code: "https://github.com/TuhinMahmud181/nh3-broiler-scrubber"
 authors:
   - family-names: Mahmud
     given-names: Tuhin
     affiliation: "Department of Chemical Engineering, Bangladesh University of Engineering and Technology (BUET), Dhaka, Bangladesh"
 keywords:
   - ammonia
-  - broiler
-  - scrubber
+  - broiler house
+  - acid scrubber
   - ammonium sulphate
-  - techno-economics
-  - uncertainty
+  - techno-economic analysis
+  - uncertainty analysis
